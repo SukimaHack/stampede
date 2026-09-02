@@ -45,13 +45,16 @@ class Migration(migrations.Migration):
         # MIG-07: schema change and a long data migration in the same file
         migrations.RunPython(backfill_status),  # MIG-08: no reverse_code - silently irreversible
 
-        # MIG-09: db_index=True generates a blocking CREATE INDEX; on a large busy
-        #         table this queues every query behind it. Needs AddIndexConcurrently
+        # MIG-09: db_index=True on a previously unindexed column generates a blocking
+        #         CREATE INDEX, which takes ACCESS EXCLUSIVE for the length of the build
+        #         and queues every query arriving behind it. Needs AddIndexConcurrently
         #         with atomic = False.
+        #         (Note: the same operation on a ForeignKey would be a state-only no-op,
+        #         because ForeignKey already defaults to db_index=True.)
         migrations.AlterField(
             model_name="order",
-            name="customer",
-            field=models.ForeignKey("shop.Customer", on_delete=models.CASCADE, db_index=True),
+            name="status",
+            field=models.CharField(max_length=20, null=True, db_index=True),
         ),
 
         # MIG-10: column dropped in the same deploy that stops using it. Old instances

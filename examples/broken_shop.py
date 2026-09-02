@@ -30,6 +30,8 @@ class Order(models.Model):
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     created = models.DateTimeField(auto_now_add=True)
     paid = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, null=True)
+    legacy_ref = models.CharField(max_length=40, blank=True)
     internal_notes = models.TextField(blank=True)
 
 
@@ -117,15 +119,33 @@ def send_confirmation_email(order):
 
 
 def restock(product_id, qty):
-    # correct: atomic in the database
+    # NOT A BUG. This is the correct atomic form, and re-reading from the database
+    # is the right way to get the value back. Flagging this counts against a review.
     Product.objects.filter(pk=product_id).update(stock=F("stock") + qty)
-    # BUG-11: instance not refreshed after an F() update; reading .stock here would be stale
     return Product.objects.get(pk=product_id).stock
+
+
+def restock_and_report(product_id, qty):
+    product = Product.objects.get(pk=product_id)
+    product.stock = F("stock") + qty
+    product.save()
+    # BUG-11: after saving an F() expression the attribute holds a CombinedExpression,
+    #         not a number. This returns something like <CombinedExpression> and any
+    #         arithmetic on it raises. Needs refresh_from_db() first.
+    return product.stock
 
 
 # ---------------------------------------------------------------- API
 
 class OrderSerializer(serializers.ModelSerializer):
+    customer_name = serializers.SerializerMethodField()
+
+    def get_customer_name(self, obj):
+        # BUG-14: crosses a relation once per serialized row. With many=True on the
+        #         list endpoint this is one query per order, and no queryset in the
+        #         viewset can fix it without select_related.
+        return obj.customer.name
+
     class Meta:
         model = Order
         # BUG-12: mass assignment - exposes paid and internal_notes as writable
@@ -134,7 +154,6 @@ class OrderSerializer(serializers.ModelSerializer):
 
 class OrderViewSet(viewsets.ModelViewSet):
     # BUG-13: no permission_classes, and queryset is not scoped to request.user
-    # BUG-14: no select_related/prefetch_related - the list endpoint N+1s per row
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
 
